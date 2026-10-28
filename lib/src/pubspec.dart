@@ -48,6 +48,9 @@ class PubSpec implements Jsonable {
       this.platforms = const {},
       this.unParsedYaml = const {}});
 
+  /// Bounds conversion of an already loaded map. Loading performed by the
+  /// caller is not protected; use [PubSpec.fromYamlString] for preflight
+  /// checks.
   factory PubSpec.fromYaml(YamlMap yamlMap) {
     final p = parseYaml(yamlMap, consumeMap: true);
 
@@ -69,8 +72,12 @@ class PubSpec implements Jsonable {
         unParsedYaml: p.unconsumed);
   }
 
-  factory PubSpec.fromYamlString(String yamlString) =>
-      PubSpec.fromYaml(loadYaml(yamlString) as YamlMap);
+  /// Checks collection keys, event count and source nesting before loading.
+  /// Scalar keys are stringified; collisions are rejected during conversion.
+  factory PubSpec.fromYamlString(String yamlString) {
+    preflightYaml(yamlString);
+    return PubSpec.fromYaml(loadYaml(yamlString) as YamlMap);
+  }
   final String? name;
 
   final String? author;
@@ -121,7 +128,7 @@ class PubSpec implements Jsonable {
 
   /// loads the pubspec from the [file]
   static Future<PubSpec> loadFile(String file) async =>
-      PubSpec.fromYaml(loadYaml(await File(file).readAsString()) as YamlMap);
+      PubSpec.fromYamlString(await File(file).readAsString());
 
   /// creates a copy of the pubspec with the changes provided
   PubSpec copy({
@@ -182,7 +189,12 @@ class PubSpec implements Jsonable {
         ..add('dev_dependencies', devDependencies)
         ..add('dependency_overrides', dependencyOverrides)
         ..add('executables', executables)
-        ..add('platforms', platforms)
+        ..add(
+            'platforms',
+            platforms.isEmpty ? null : platforms,
+            (_) => <String, Object?>{
+                  for (final name in platforms.keys) name: null
+                })
         ..addAll(unParsedYaml!))
       .json;
 }

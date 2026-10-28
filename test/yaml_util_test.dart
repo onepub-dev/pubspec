@@ -1,11 +1,115 @@
+import 'dart:io';
 import 'dart:isolate';
 
+import 'package:dcli_core/dcli_core.dart' as core;
 import 'package:pubspec2/pubspec2.dart';
 import 'package:pubspec2/src/yaml_util.dart';
 import 'package:test/test.dart';
 import 'package:yaml/yaml.dart';
 
 void main() {
+  test('already loaded maps also reject normalization collisions', () {
+    final loaded = loadYaml('custom: {"1": keep, 1: replace}') as YamlMap;
+    expect(() => PubSpec.fromYaml(loaded), throwsFormatException);
+  });
+
+  for (final keys in [
+    '"1": keep\n  1: replace',
+    '"true": keep\n  true: replace',
+    '"null": keep\n  null: replace'
+  ]) {
+    test('rejects normalized key collision: $keys', () {
+      expect(
+          () => PubSpec.fromYamlString('custom:\n  $keys\n'),
+          throwsA(isA<FormatException>().having((e) => e.message, 'message',
+              contains('collide after string conversion'))));
+    });
+  }
+
+  test('noncolliding scalar keys retain established string conversion', () {
+    final spec =
+        PubSpec.fromYamlString('custom: {1: one, true: yes, null: nil}');
+    expect(spec.unParsedYaml!['custom'],
+        {'1': 'one', 'true': 'yes', 'null': 'nil'});
+  });
+
+  for (final source in [
+    '? [one, two]\n: ignored',
+    '? {one: two}\n: ignored',
+    'base: &base [leaf]\n? *base\n: ignored',
+    'base: &base {leaf: value}\n? *base\n: ignored',
+    'base: &base scalar\nrebound: &base []\n? *base\n: ignored',
+    'base: &base {? *base : ignored}',
+    'custom: [{? [leaf] : ignored}]',
+  ]) {
+    test('preflight rejects collection key: $source', () {
+      expect(
+          () => preflightYaml(source),
+          throwsA(isA<FormatException>().having((e) => e.message, 'message',
+              'YAML mapping keys must be scalars')));
+      expect(() => PubSpec.fromYamlString(source), throwsFormatException);
+    });
+  }
+
+  test('scalar alias keys and collection-to-scalar rebinding are allowed', () {
+    final spec = PubSpec.fromYamlString('''
+base: &key []
+rebound: &key scalar
+custom: {*key : retained}
+''');
+    expect(spec.unParsedYaml!['custom'], {'scalar': 'retained'});
+  });
+
+  test('preflight resets anchors between documents', () {
+    expect(() => preflightYaml('base: &key scalar\n---\n*key'),
+        throwsFormatException);
+    preflightYaml('base: &key []\n---\nbase: &key scalar\ncustom: {*key : ok}');
+  });
+
+  test('loadFile applies collection-key preflight', () async {
+    await core.withTempDir((directory) async {
+      final path = '$directory/pubspec.yaml';
+      await File(path).writeAsString('base: &base [leaf]\n? *base\n: ignored');
+      await expectLater(PubSpec.loadFile(path), throwsFormatException);
+    });
+  });
+
+  test('source nesting accepts depth 64 and rejects depth 65', () {
+    PubSpec.fromYamlString('custom: ${'[' * 62}leaf${']' * 62}');
+    expect(() => preflightYaml('custom: ${'[' * 63}leaf${']' * 63}'),
+        throwsFormatException);
+  });
+
+  test('preflight event budget has an exact finite boundary', () {
+    // Nine framing events: stream/document/map/sequence starts and ends,
+    // plus the scalar mapping key. No alias expansion or loader allocation.
+    final items = List.filled(199995, 'x').join(',');
+    preflightYaml('custom: [$items]');
+    expect(
+        () => preflightYaml('custom: [$items,x]'),
+        throwsA(isA<FormatException>().having(
+            (e) => e.message, 'message', 'YAML exceeds 200004 parser events')));
+  });
+
+  test('collection alias key with sharing is rejected within two seconds',
+      () async {
+    final source = StringBuffer('a0: &a0 [leaf]\n');
+    for (var i = 1; i <= 12; i++) {
+      source.writeln('a$i: &a$i [*a${i - 1}, *a${i - 1}]');
+    }
+    source.writeln('? *a12\n: ignored');
+    final reply = ReceivePort();
+    final worker = await Isolate.spawn(
+        _parseInWorker, (reply.sendPort, source.toString()));
+    try {
+      expect(await reply.first.timeout(const Duration(seconds: 2)),
+          'YAML mapping keys must be scalars');
+    } finally {
+      worker.kill(priority: Isolate.immediate);
+      reply.close();
+    }
+  });
+
   test('normal parsing preserves maps, lists, scalars and consumption', () {
     final parser = parseYaml(loadYaml('''
 name: example

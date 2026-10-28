@@ -1,6 +1,16 @@
 # 4.0.1
 - Safely encode YAML keys and scalar values when saving pubspec files.
-- Bound YAML alias expansion during parsing to prevent excessive resource use.
+- Reject collection mapping keys (including aliases) before YAML loading, and
+  limit the streaming preflight to 200004 events and 64 levels of source nesting.
+  Bound post-load conversion to 100000 expanded nodes and 64 levels, including
+  aliases. These are structural limits, not a universal byte, memory or time
+  bound: files are read in full and the YAML scanner still processes source text.
+  `PubSpec.fromYaml` accepts an already loaded map and only guards conversion.
+- Reject scalar mapping keys that collide after string conversion. Noncolliding
+  numeric, boolean and null keys still become strings, as in previous releases.
+- Preserve platform markers when saving and reparsing, while retaining actual
+  empty maps in unknown fields.
+- Update generated package version metadata to 4.0.1.
 
 # 4.0.0
 - breaking change - load and save now take the directory path as a String rather than a Directory.
