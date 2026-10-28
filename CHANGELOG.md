@@ -1,3 +1,7 @@
+# 4.0.1
+- Safely encode YAML keys and scalar values when saving pubspec files.
+- Bound YAML alias expansion during parsing to prevent excessive resource use.
+
 # 4.0.0
 - breaking change - load and save now take the directory path as a String rather than a Directory.
 - removed dcli as a dependency to reduce the circular dependencies 
