@@ -7,9 +7,73 @@ import 'type.dart';
 YamlParser parseYaml(YamlMap j, {bool consumeMap = false}) =>
     YamlParser(j, consumeMap: consumeMap);
 
+// Count the expanded tree before yaml_extension allocates it. These limits
+// leave ample room for pubspec metadata while bounding conversion work and
+// recursion, including for small documents with heavily shared aliases.
+const _maxExpandedNodes = 100000;
+const _maxYamlDepth = 64;
+
+Map<String, dynamic> _boundedToMap(YamlMap yamlMap) {
+  final sizes = Map<YamlNode, ({int size, int height})>.identity();
+  final active = Set<YamlNode>.identity();
+
+  ({int size, int height}) measure(YamlNode node, int depth) {
+    if (depth > _maxYamlDepth) {
+      throw const FormatException('YAML exceeds maximum depth of 64');
+    }
+    if (active.contains(node)) {
+      throw const FormatException('Cyclic YAML aliases are not supported');
+    }
+    final cached = sizes[node];
+    if (cached != null) {
+      // A shared subtree can be encountered later on a deeper path.
+      if (depth + cached.height - 1 > _maxYamlDepth) {
+        throw const FormatException('YAML exceeds maximum depth of 64');
+      }
+      return cached;
+    }
+
+    active.add(node);
+    var size = 1;
+    var height = 1;
+    void addChild(YamlNode child) {
+      final measured = measure(child, depth + 1);
+      // Subtract before adding so the accounting never grows past the limit.
+      if (measured.size > _maxExpandedNodes - size) {
+        throw const FormatException('YAML exceeds 100000 expanded nodes');
+      }
+      size += measured.size;
+      if (measured.height + 1 > height) {
+        height = measured.height + 1;
+      }
+    }
+
+    if (node is YamlMap) {
+      for (final entry in node.nodes.entries) {
+        if (entry.key is! YamlScalar) {
+          throw const FormatException('YAML mapping keys must be scalars');
+        }
+        addChild(entry.key as YamlNode);
+        addChild(entry.value);
+      }
+    } else if (node is YamlList) {
+      for (final child in node.nodes) {
+        addChild(child);
+      }
+    }
+    active.remove(node);
+    final result = (size: size, height: height);
+    sizes[node] = result;
+    return result;
+  }
+
+  measure(yamlMap, 1);
+  return yamlMap.toMap();
+}
+
 class YamlParser {
   YamlParser(YamlMap yamlMap, {required bool consumeMap})
-      : _yamlMap = yamlMap.toMap(),
+      : _yamlMap = _boundedToMap(yamlMap),
         _consumeMap = consumeMap;
   final Map<String, dynamic> _yamlMap;
   final bool _consumeMap;
